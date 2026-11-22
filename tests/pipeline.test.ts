@@ -139,3 +139,25 @@ describe("robustness", () => {
     expect(ms).toBeLessThan(4);
   });
 });
+
+describe("tab", () => {
+  const { TabMapper } = require("../src/analysis/tab");
+  const notes = (midis: number[]) => midis.map((midi, i) => ({ id: i + 1, midi, start: i, end: i + 0.5, freq: 0, peakRms: 0 }));
+
+  test("a two-octave A minor pentatonic run is playable without position jumps", () => {
+    const tab = new TabMapper();
+    const ns = notes([45, 48, 50, 52, 55, 57, 60, 62, 64, 67, 69, 72]);
+    const pos = tab.sync(ns);
+    const frets = ns.map((n) => pos.get(n.id).fret);
+    for (let i = 1; i < frets.length; i++) {
+      if (frets[i] && frets[i - 1]) expect(Math.abs(frets[i] - frets[i - 1])).toBeLessThanOrEqual(4);
+    }
+  });
+
+  test("open-position E minor melody uses open strings", () => {
+    const tab = new TabMapper();
+    const ns = notes([40, 43, 45, 47, 50, 52]);
+    const pos = tab.sync(ns);
+    expect(ns.map((n) => pos.get(n.id).fret)).toEqual([0, 3, 0, 2, 0, 2]);
+  });
+});

@@ -49,8 +49,10 @@ export interface KeyEstimate {
   histogram: number[];
   /** Stationary distribution of the learned transition matrix. */
   stationary: number[];
-  /** Row-normalised learned transition matrix (12x12). */
+  /** Row-normalised learned transition matrix (12x12), lightly smoothed. */
   transitions: number[][];
+  /** Row-normalised raw counts; rows you haven't played from are all zero. */
+  observed: number[][];
   noteWeight: number;
 }
 
@@ -172,8 +174,17 @@ export class KeyDetector {
     return pi;
   }
 
+  observedMatrix(): number[][] {
+    return Array.from({ length: 12 }, (_, i) => {
+      let sum = 0;
+      for (let j = 0; j < 12; j++) sum += this.counts[i * 12 + j];
+      return Array.from({ length: 12 }, (_, j) => (sum > 1e-6 ? this.counts[i * 12 + j] / sum : 0));
+    });
+  }
+
   analyze(): KeyEstimate {
     const P = this.transitionMatrix();
+    const observed = this.observedMatrix();
     const pi = this.stationary(P);
     const histSum = this.hist.reduce((a, b) => a + b, 0);
     let transTotal = 0;
@@ -181,7 +192,7 @@ export class KeyDetector {
     const histogram = Array.from(this.hist, (h) => (histSum > 0 ? h / histSum : 0));
 
     if (histSum < 1.5) {
-      return { candidates: [], best: null, histogram, stationary: pi, transitions: P, noteWeight: histSum };
+      return { candidates: [], best: null, histogram, stationary: pi, transitions: P, observed, noteWeight: histSum };
     }
 
     // Trust the Markov stationary distribution more as transitions accumulate.
@@ -208,7 +219,7 @@ export class KeyDetector {
     for (const s of scored) s.prob /= z;
     scored.sort((a, b) => b.prob - a.prob);
 
-    return { candidates: scored.slice(0, 6), best: scored[0], histogram, stationary: pi, transitions: P, noteWeight: histSum };
+    return { candidates: scored.slice(0, 6), best: scored[0], histogram, stationary: pi, transitions: P, observed, noteWeight: histSum };
   }
 }
 

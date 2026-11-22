@@ -18,7 +18,7 @@ bun tauri dev        # desktop app
 bun tauri build      # installer / .app / .deb in src-tauri/target/release/bundle
 
 bun run dev          # same UI in a browser at http://localhost:1420 (handy for hacking)
-bun test             # 21 tests on synthetic Karplus-Strong guitar audio
+bun test             # 23 tests on synthetic Karplus-Strong guitar audio
 ```
 
 **Microphone permission**
@@ -34,17 +34,22 @@ disabled on purpose — they wreck guitar tone.
 
 ## What's on screen
 
-| Panel | What it shows |
-|---|---|
-| Now playing | Note + octave, Hz, YIN clarity, ±50¢ tuner needle, input level |
-| Waveform | Pitch-triggered oscilloscope (≈4 periods, stable) + full-window envelope |
-| Spectrum | Log-frequency FFT bars with string reference lines and live f₀ marker |
-| Transcription | Scrolling 10 s piano roll + running list of written notes |
-| Chroma | 12 pitch-class energies feeding the chord model (chord tones highlighted) |
-| Scale / key | Best scale + confidence, its notes, top-5 alternatives |
-| Chord | Current chord + roman numeral, posterior of top candidates, diatonic chords of the key, progression log |
-| Markov | The learned 12×12 note-transition matrix and its stationary distribution π |
-| Fretboard | Scale notes (tonic gold), current chord tones (pink rings), the note you're playing (pulsing) |
+The look is taken from the instrument itself: a rosewood board, bone and ink, an amber jewel lamp for
+whatever is sounding, red for chord tones, and mother-of-pearl for scale notes.
+
+- **Tab staff (the hero):** what you play is written as guitar tab on bone paper, in real time, with
+  chord names lettered above it like a lead sheet. String and fret are chosen the way a player would:
+  near the current hand position, using open strings when they're handy.
+- **Playing:** the current note, its frequency, and an LED tuner strip.
+- **Waveform and spectrum:** a pitch-triggered scope, and a log-frequency spectrum marked at the open strings.
+- **Scale:** the best match, how likely it is, its notes, and the runners-up.
+- **Chord:** the current chord and its Roman numeral, the chords in the key, and the recent progression.
+- **On the neck:** a fretboard showing the scale, the current chord tones, and the note sounding now.
+- **How it's deciding:** the learned Markov transition matrix, its stationary distribution, and the live chroma.
+
+Gain and Gate are amp-style knobs: drag, scroll, or use the arrow keys, and double-click to reset.
+Styling is Tailwind CSS v4, with theme tokens in `src/styles.css`. Fonts (Barlow and Barlow Condensed)
+are bundled, so the app works offline.
 
 ## How it works
 
@@ -95,9 +100,10 @@ dim, 5) + N.C.
 src/
   audio/engine.ts        getUserMedia → AnalyserNode → Analyzer (rAF loop)
   analysis/pipeline.ts   pure-TS pipeline (testable without a browser)
+  analysis/tab.ts        picks a string + fret for each note
   dsp/                   fft, YIN, chroma/spectrum, note tracker
   theory/                theory.ts (scales, chords, spelling), markov.ts (key + chord models)
-  components/            canvases (waveform, spectrum, piano roll) and panels
+  components/            tab staff, scope, spectrum, panels, knobs and footswitch
 src-tauri/               Tauri v2 shell, Info.plist, entitlements, Linux mic grant
 tests/                   Karplus–Strong synth + pipeline tests
 ```

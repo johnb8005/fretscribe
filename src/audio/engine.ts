@@ -24,6 +24,8 @@ export class AudioEngine {
   private lastProcess = 0;
   private listeners = new Set<FrameListener>();
   private gainValue = 1;
+  /** Keeps analysis time monotonic across stop/start (each AudioContext restarts at 0). */
+  private timeOffset = 0;
 
   subscribe(fn: FrameListener): () => void {
     this.listeners.add(fn);
@@ -80,6 +82,8 @@ export class AudioEngine {
     if (!this.analyzer || this.analyzer.sampleRate !== this.ctx.sampleRate) {
       this.analyzer = new Analyzer(this.ctx.sampleRate);
     }
+    this.timeOffset = (this.latest?.t ?? 0) + 1;
+    this.lastProcess = -1;
     this.running = true;
     this.loop();
   }
@@ -102,7 +106,7 @@ export class AudioEngine {
   private loop = () => {
     if (!this.running || !this.node || !this.ctx || !this.analyzer) return;
     this.raf = requestAnimationFrame(this.loop);
-    const now = this.ctx.currentTime;
+    const now = this.timeOffset + this.ctx.currentTime;
     // Cap analysis at ~60 Hz so high-refresh displays don't change HMM dynamics.
     if (now - this.lastProcess < 1 / 62) return;
     this.lastProcess = now;
