@@ -1,5 +1,8 @@
 # Fretscribe 🎸
 
+[![CI](https://github.com/johnb8005/fretscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/johnb8005/fretscribe/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/johnb8005/fretscribe)](https://github.com/johnb8005/fretscribe/releases/latest)
+
 Realtime guitar transcriber: plug in (or mic up) your guitar and watch the notes being
 written, the waveform and spectrum moving, and the **scale** and **most likely chord**
 inferred live using music theory + Markov models.
@@ -31,6 +34,30 @@ bun test             # 23 tests on synthetic Karplus-Strong guitar audio
 **Tips:** an audio interface (DI) beats a laptop mic. Raise **Gain** until the level bar moves a lot on
 picking; raise **Gate** if room noise produces phantom notes. Echo cancellation / noise suppression / AGC are
 disabled on purpose — they wreck guitar tone.
+
+## Download (Linux)
+
+Each green build of `main` is published on the [Releases](https://github.com/johnb8005/fretscribe/releases) page:
+
+- `.AppImage`: runs on most distros (`chmod +x Fretscribe_*.AppImage && ./Fretscribe_*.AppImage`)
+- `.deb` for Debian and Ubuntu, `.rpm` for Fedora and openSUSE
+- `fretscribe-<version>-linux-x86_64`: the bare binary (needs WebKitGTK 4.1 installed)
+- `SHA256SUMS` to verify the downloads
+
+## CI and versioning
+
+`.github/workflows/ci.yml` runs on every push and pull request: `bun test`, typecheck and frontend build,
+and `cargo check`. When that passes on `main`, the release job tags the commit and publishes the Linux
+bundles. The version comes from [conventional commits](https://www.conventionalcommits.org) since the last tag:
+
+| Commit message | Bump |
+|---|---|
+| `feat: …` | minor (0.1.0 → 0.2.0) |
+| `fix: …`, anything else | patch (0.1.0 → 0.1.1) |
+| `feat!: …` or a `BREAKING CHANGE` footer | major (0.1.0 → 1.0.0) |
+
+The first release takes the version in `package.json` (0.1.0). CI stamps the version into
+`package.json`, `tauri.conf.json` and `Cargo.toml` at build time, so nothing needs to be bumped by hand.
 
 ## What's on screen
 
