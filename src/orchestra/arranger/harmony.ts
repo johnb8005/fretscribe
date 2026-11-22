@@ -143,7 +143,10 @@ function scaleSet(key: KeyInfo) {
 const logT = (from: number, to: number, bias: number[]) => Math.log(TRANS[from][to] * (bias[to] ?? 1) + 1e-6);
 
 /** Viterbi harmonisation of a complete melody. */
-export function harmonize(melody: QNote[], totalSteps: number, key: KeyInfo, style: StyleDef): ChordSlot[] {
+/** Extra log-score for a chord move (your learned taste). */
+export type ChordBonus = (prev: Chord | null, next: Chord) => number;
+
+export function harmonize(melody: QNote[], totalSteps: number, key: KeyInfo, style: StyleDef, bonus?: ChordBonus): ChordSlot[] {
   const vocab = vocabulary(key, style);
   const stepsPerBar = style.beatsPerBar * STEPS_PER_BEAT;
   const slotSteps = style.harmonicRhythm * STEPS_PER_BEAT;
@@ -161,7 +164,7 @@ export function harmonize(melody: QNote[], totalSteps: number, key: KeyInfo, sty
   E[n - 1][0] += 0.4;
   if (n > 1) E[n - 2][4] += 0.12;
 
-  let delta = vocab.map((_, j) => Math.log(START[j] * (style.degreeBias[j] ?? 1)) + LAMBDA * E[0][j]);
+  let delta = vocab.map((c, j) => Math.log(START[j] * (style.degreeBias[j] ?? 1)) + LAMBDA * E[0][j] + (bonus?.(null, c) ?? 0));
   const back: number[][] = [];
   for (let i = 1; i < n; i++) {
     const next: number[] = new Array(V);
@@ -169,7 +172,7 @@ export function harmonize(melody: QNote[], totalSteps: number, key: KeyInfo, sty
     for (let j = 0; j < V; j++) {
       let best = -Infinity, arg = 0;
       for (let k = 0; k < V; k++) {
-        const v = delta[k] + logT(k, j, style.degreeBias);
+        const v = delta[k] + logT(k, j, style.degreeBias) + (bonus?.(vocab[k], vocab[j]) ?? 0);
         if (v > best) { best = v; arg = k; }
       }
       next[j] = best + LAMBDA * E[i][j];
@@ -188,14 +191,14 @@ export function harmonize(melody: QNote[], totalSteps: number, key: KeyInfo, sty
 }
 
 /** Greedy choice while recording: previous chord + what was just sung. */
-export function nextChord(prev: Chord | null, recent: WeightedPc[], key: KeyInfo, style: StyleDef): Chord {
+export function nextChord(prev: Chord | null, recent: WeightedPc[], key: KeyInfo, style: StyleDef, bonus?: ChordBonus): Chord {
   const vocab = vocabulary(key, style);
   const scalePcs = scaleSet(key);
   const colorful = style.color !== "triad";
   let best = vocab[0], bestScore = -Infinity;
   for (const c of vocab) {
     const prior = prev ? logT(prev.degree, c.degree, style.degreeBias) : Math.log(START[c.degree]);
-    const s = prior + LAMBDA * emission(c, recent, scalePcs, colorful);
+    const s = prior + LAMBDA * emission(c, recent, scalePcs, colorful) + (bonus?.(prev, c) ?? 0);
     if (s > bestScore) { bestScore = s; best = c; }
   }
   return best;

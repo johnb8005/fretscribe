@@ -3,51 +3,31 @@
 [![CI](https://github.com/johnb8005/fretscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/johnb8005/fretscribe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/johnb8005/fretscribe)](https://github.com/johnb8005/fretscribe/releases/latest)
 
-Realtime guitar transcriber: plug in (or mic up) your guitar and watch the notes being
-written, the waveform and spectrum moving, and the **scale** and **most likely chord**
-inferred live using music theory + Markov models.
-
-Tauri v2 · Bun · React 19 · TypeScript. All DSP runs in TypeScript inside the webview (Web Audio);
-Rust is only the native shell (window + microphone permission).
-
 Two modes:
 
-- **Guitar:** play, and it writes the notes as tab in real time, with waveform, spectrum, scale and chord detection.
-- **Orchestra:** hum or whistle a tune, and an orchestra plays it back in the style you choose. A full score is engraved as you sing.
+- **Guitar:** play, and it writes the notes as tab in real time. You also see the waveform and
+  spectrum, plus the scale and most likely chord, inferred with music theory and Markov models.
+- **Orchestra:** hum or whistle a tune, and an orchestra plays it back in the style and ensemble
+  you choose. A full score is engraved as you sing, and it learns your taste from 👍/👎.
 
-## Run
+**Open it:** https://johnb8005.github.io/fretscribe/ (Chrome or Edge recommended; allow the microphone)
 
-Prerequisites: [Rust](https://rustup.rs), [Bun](https://bun.sh), and the
-[Tauri system deps](https://v2.tauri.app/start/prerequisites/) for your OS.
+Bun · React 19 · TypeScript · Tailwind v4 · Web Audio · VexFlow. Everything runs in the browser:
+pitch tracking, synthesis, engraving and the learning. There is no server.
+
+## Run locally
 
 ```bash
 bun install
-bun tauri dev        # desktop app
-bun tauri build      # installer / .app / .deb in src-tauri/target/release/bundle
-
-bun run dev          # same UI in a browser at http://localhost:1420 (handy for hacking)
-bun test             # 64 tests on synthetic guitar and humming audio
+bun run dev          # http://localhost:1420
+bun test             # 75 tests on synthetic guitar and humming audio
+bun run build        # static site in dist/
 ```
 
-**Microphone permission**
-- macOS: first launch shows a prompt (`Info.plist` + entitlement included). In `tauri dev` the prompt is
-  attributed to your terminal app — allow it under *System Settings → Privacy & Security → Microphone*.
-- Windows: *Settings → Privacy → Microphone → Let desktop apps access your microphone*.
-- Linux: WebKitGTK blocks `getUserMedia` by default; `src-tauri/src/lib.rs` enables media streams and
-  auto-grants the request. Needs GStreamer (`gstreamer1.0-plugins-good`, `gstreamer1.0-pulseaudio` or PipeWire).
+The microphone needs a secure page: `localhost` in development, HTTPS (GitHub Pages) when deployed.
 
-**Tips:** an audio interface (DI) beats a laptop mic. Raise **Gain** until the level bar moves a lot on
-picking; raise **Gate** if room noise produces phantom notes. Echo cancellation / noise suppression / AGC are
-disabled on purpose — they wreck guitar tone.
-
-## Download (Linux)
-
-Each green build of `main` is published on the [Releases](https://github.com/johnb8005/fretscribe/releases) page:
-
-- `.AppImage`: runs on most distros (`chmod +x Fretscribe_*.AppImage && ./Fretscribe_*.AppImage`)
-- `.deb` for Debian and Ubuntu, `.rpm` for Fedora and openSUSE
-- `fretscribe-<version>-linux-x86_64`: the bare binary (needs WebKitGTK 4.1 installed)
-- `SHA256SUMS` to verify the downloads
+**Tips:** an audio interface (DI) beats a laptop mic for guitar. Use headphones in Orchestra mode.
+Echo cancellation, noise suppression and AGC are turned off for guitar, because they wreck the tone.
 
 ## Orchestra mode
 
@@ -63,6 +43,10 @@ Each green build of `main` is published on the [Releases](https://github.com/joh
    the mix.
 
 Or press **Try the demo tune** to hear *Ode to Joy* without singing.
+
+**Metre and tempo:** pick 2/4, 3/4, 4/4, 5/4 or compound 6/8, 9/8 or 12/8 (clicks on dotted
+quarters, 8ths beamed in threes). Choose an Italian tempo term or turn the knob; each follows
+the other.
 
 **Score:** engraved with VexFlow and the Bravura font, both bundled. It shows key and time
 signatures, a tempo mark (e.g. *Andante* ♩ = 88), chord symbols, beams, ties, accidentals,
@@ -93,11 +77,30 @@ EQ, a glue compressor and a limiter.
   Chosen greedily while you sing, then by Viterbi over the whole take.
 - **Dynamics:** come from your sung loudness, the shape of each phrase, and the climax in the last phrase.
 
+## Learning your taste (bandit)
+
+Press **More like this** / **Not this** (or the L/D keys) any time while you hum or listen.
+
+- **What it chooses.** For each part, phrase by phrase, it picks a texture: arpeggio shape,
+  ostinato, two- or four-voice harmony, pulse pattern, or resting. It also picks the chord colour
+  (triads, 7ths, 9ths), how loud to play, and which chord moves to favour. The chord bonus feeds
+  the Markov chord model.
+- **How it chooses.** Thompson sampling on a Bayesian linear model over human-readable features
+  (`src/orchestra/taste/`). Uncertain options get tried, liked ones win.
+- **Credit.** A reaction goes to what was sounding. Textures and colour get full credit; chords
+  get credit decaying over about a bar.
+- **Response.** A 👎 re-decides everything from the next bar, so you hear the change at once.
+- **Implicit signals.** Muting a part is a mild 👎; letting a take play to the end is a mild 👍.
+- **Exploration.** *Adventurous* sets how much it explores. At 0 it plays its best guess.
+- **Your taste panel.** Shows what it has learned ("harp in broken chords", "the move ii → V").
+  The model is saved in your browser, and "Forget my taste" resets it.
+
 ## CI and versioning
 
-`.github/workflows/ci.yml` runs on every push and pull request: `bun test`, typecheck and frontend build,
-and `cargo check`. When that passes on `main`, the release job tags the commit and publishes the Linux
-bundles. The version comes from [conventional commits](https://www.conventionalcommits.org) since the last tag:
+`.github/workflows/ci.yml` runs `bun test`, the typecheck and the build on every push and pull
+request. When that passes on `main`, the release job tags the commit, deploys the site to GitHub
+Pages and publishes a release with the static site zipped. The version comes from
+[conventional commits](https://www.conventionalcommits.org) since the last tag:
 
 | Commit message | Bump |
 |---|---|
@@ -106,7 +109,7 @@ bundles. The version comes from [conventional commits](https://www.conventionalc
 | `feat!: …` or a `BREAKING CHANGE` footer | major (0.1.0 → 1.0.0) |
 
 The first release takes the version in `package.json` (0.1.0). CI stamps the version into
-`package.json`, `tauri.conf.json` and `Cargo.toml` at build time, so nothing needs to be bumped by hand.
+`package.json` at build time, so nothing needs to be bumped by hand.
 
 ## What's on screen
 
@@ -180,7 +183,6 @@ src/
   dsp/                   fft, YIN, chroma/spectrum, note tracker
   theory/                theory.ts (scales, chords, spelling), markov.ts (key + chord models)
   components/            tab staff, scope, spectrum, panels, knobs and footswitch
-src-tauri/               Tauri v2 shell, Info.plist, entitlements, Linux mic grant
 tests/                   Karplus–Strong synth + pipeline tests
 ```
 

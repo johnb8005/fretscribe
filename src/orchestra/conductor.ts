@@ -12,7 +12,10 @@ import type { NoteEvent } from "../dsp/noteTracker";
 import { KeyDetector } from "../theory/markov";
 import { SCALE_BY_ID, pc } from "../theory/theory";
 import { arrange, generateSlot, quantize, registerShift, totalStepsFor, type GenState, type TimedNote } from "./arranger/arrange";
-import { harmonicKey, nextChord, slotEvidence } from "./arranger/harmony";
+import { harmonicKey, nextChord, slotEvidence, vocabulary } from "./arranger/harmony";
+import { pulseSteps, pulsesPerBar } from "./arranger/meter";
+import { Planner, type Credit } from "./taste/planner";
+import { loadTaste, saveTaste, type TasteModel } from "./taste/model";
 import { DYN_GAIN, applyDynamics } from "./arranger/dynamics";
 import { STEPS_PER_BEAT, type Arrangement, type Chord, type ChordSlot, type KeyInfo, type Part, type PartSpec, type QNote, type StyleDef } from "./arranger/types";
 import { DEFAULT_CHANNEL, DEFAULT_MASTER, Mixer, type ChannelSettings, type MasterSettings } from "./synth/mixer";
@@ -44,6 +47,11 @@ export class Conductor {
   countIn = true;
   liveMelody = true;
   loop = false;
+  /** Your learned taste (persisted) and the planner that uses it. */
+  readonly taste: TasteModel = loadTaste();
+  planner: Planner;
+  private adventure = 0.35;
+  private scheduledUntil = -1;
 
   private overrides = new Map<string, { patch?: string; channel?: Partial<ChannelSettings> }>();
   private masterOverrides = new Map<string, Partial<MasterSettings>>();
@@ -75,8 +83,29 @@ export class Conductor {
     this.style = style;
     this.bpm = style.bpm;
     this.mixer = new Mixer(ctx, ctx.destination, this.master());
-    this.mixer.setTempo(this.bpm);
+    this.planner = new Planner(this.taste, style, this.adventure);
+    this.mixer.setTempo(this.quarterBpm);
     this.applyMixer();
+  }
+
+  /** Counted beat (♩ or ♩.) in 16th steps. */
+  get pulse() {
+    return pulseSteps(this.style);
+  }
+
+  /** Tempo expressed in quarter notes, for the parts of the engine that think in ♩. */
+  get quarterBpm() {
+    return (this.bpm * STEPS_PER_BEAT) / this.pulse;
+  }
+
+  get adventurous() {
+    return this.adventure;
+  }
+
+  set adventurous(v: number) {
+    this.adventure = v;
+    this.planner.adventurous = v;
+    this.emit();
   }
 
   subscribe(fn: () => void) {
@@ -91,7 +120,7 @@ export class Conductor {
   // ---------------------------------------------------------------- settings
 
   get stepDur() {
-    return 60 / this.bpm / STEPS_PER_BEAT;
+    return 60 / this.bpm / this.pulse;
   }
 
   get stepsPerBar() {
@@ -138,6 +167,11 @@ export class Conductor {
   setChannel(spec: PartSpec, patch: Partial<ChannelSettings>) {
     const k = this.key(spec.id);
     const cur = this.overrides.get(k) ?? {};
+    // Muting a part while it plays is a mild "not this".
+    if (patch.mute && !this.channelFor(spec).mute && this.state !== "idle") {
+      this.planner.feedbackPart(spec.id, -0.3, this.currentStep());
+      saveTaste(this.taste);
+    }
     const channel = { ...cur.channel, ...patch, params: { ...cur.channel?.params, ...patch.params } } as Partial<ChannelSettings>;
     this.overrides.set(k, { ...cur, channel });
     this.mixer.configure(spec.id, this.channelFor(spec));
@@ -155,15 +189,22 @@ export class Conductor {
     this.mixer.prune(new Set(this.style.parts.map((p) => p.id)));
   }
 
-  setStyle(style: StyleDef) {
+  /**
+   * @param tempo "style" → the style's own tempo; "keep" → same number;
+   *              "convert" → same speed of 16ths (for a metre change, e.g. ♩=84 → ♩.=56).
+   */
+  setStyle(style: StyleDef, tempo: "style" | "keep" | "convert" = "style") {
     const wasPlaying = this.state === "playing";
     if (this.state !== "idle") this.stop();
+    const oldPulse = this.pulse;
     this.style = style;
-    this.bpm = style.bpm;
-    this.mixer.setTempo(this.bpm);
+    if (tempo === "style") this.bpm = style.bpm;
+    else if (tempo === "convert") this.bpm = Math.round((this.bpm * oldPulse) / this.pulse);
+    this.planner = new Planner(this.taste, style, this.adventure);
+    this.mixer.setTempo(this.quarterBpm);
     this.mixer.setMaster(this.master());
     this.applyMixer();
-    if (this.arrangement) this.arrangement = arrange(this.arrangement.melody, style);
+    if (this.arrangement) this.arrangement = arrange(this.arrangement.melody, style, { planner: this.planner });
     this.emit();
     if (wasPlaying) this.play();
   }
@@ -174,15 +215,16 @@ export class Conductor {
       const step = this.currentStep();
       this.bpm = bpm;
       this.startTime = this.ctx.currentTime - step * this.stepDur;
-      this.nextClickBeat = Math.ceil(step / STEPS_PER_BEAT);
+      this.nextClickBeat = Math.ceil(step / this.pulse);
     } else this.bpm = bpm;
-    this.mixer.setTempo(bpm);
+    this.mixer.setTempo(this.quarterBpm);
     this.emit();
   }
 
   loadMelody(melody: QNote[]) {
     this.stop();
-    this.arrangement = arrange(melody, this.style);
+    this.planner = new Planner(this.taste, this.style, this.adventure);
+    this.arrangement = arrange(melody, this.style, { planner: this.planner });
     this.emit();
   }
 
@@ -252,7 +294,8 @@ export class Conductor {
       .filter((e) => e.note.step >= fromStep)
       .sort((a, b) => a.note.step - b.note.step);
     this.cursor = 0;
-    this.nextClickBeat = Math.ceil(fromStep / STEPS_PER_BEAT);
+    this.scheduledUntil = fromStep - 1;
+    this.nextClickBeat = Math.ceil(fromStep / this.pulse);
     this.startTimer();
     this.emit();
   }
@@ -269,10 +312,11 @@ export class Conductor {
     this.liveShift = null;
     this.liveKey = null;
     this.arrangement = null;
+    this.planner = new Planner(this.taste, this.style, this.adventure);
     const barDur = this.stepsPerBar * this.stepDur;
     this.startTime = this.ctx.currentTime + 0.2 + (this.countIn ? barDur : 0);
     this.recordingFrom = this.startTime - (this.countIn ? barDur : 0);
-    this.nextClickBeat = this.countIn ? -this.style.beatsPerBar : 0;
+    this.nextClickBeat = this.countIn ? -pulsesPerBar(this.style) : 0;
     this.state = this.countIn ? "countIn" : "recording";
 
     const tracker = engine.analyzer?.tracker;
@@ -304,8 +348,9 @@ export class Conductor {
       c.end = now;
       c.open = false;
     }
-    const melody = quantize(this.captured.map((c) => ({ ...c, vel: this.loudness(c.peak) })), this.startTime, this.bpm, this.style.melodyGrid);
-    this.arrangement = melody.length ? arrange(melody, this.style) : null;
+    const melody = quantize(this.captured.map((c) => ({ ...c, vel: this.loudness(c.peak) })), this.startTime, this.quarterBpm, this.style.melodyGrid);
+    // Same planner: the textures you just liked or disliked carry over.
+    this.arrangement = melody.length ? arrange(melody, this.style, { planner: this.planner }) : null;
   }
 
   // ---------------------------------------------------------------- recording
@@ -331,7 +376,9 @@ export class Conductor {
       }
       if (this.liveMelody) {
         const vs: Voice[] = [];
+        const bar = Math.floor(Math.max(0, this.currentStep()) / this.stepsPerBar);
         for (const spec of this.melodySpecs()) {
+          if (spec.role === "double" && this.planner.textureFor(spec, bar) === null) continue;
           const midi = n.midi + this.liveShift + (spec.role === "double" ? (spec.octave ?? 0) * 12 : 0);
           const patch = PATCH_BY_ID[this.patchFor(spec)];
           const ch = this.mixer.channel(spec.id, this.channelFor(spec));
@@ -358,7 +405,7 @@ export class Conductor {
     return quantize(
       this.captured.map((c) => ({ ...c, end: c.open ? now : c.end, vel: this.loudness(c.peak) })),
       this.startTime,
-      this.bpm,
+      this.quarterBpm,
       this.style.melodyGrid,
     );
   }
@@ -385,17 +432,22 @@ export class Conductor {
     // Evidence: the last beat before the change plus whatever is still sounding.
     const ev = slotEvidence(melody, Math.max(0, step - STEPS_PER_BEAT), STEPS_PER_BEAT * 2, this.stepsPerBar);
     const prev: Chord | null = this.liveChords[this.liveChords.length - 1]?.chord ?? null;
-    const chord = ev.length || !prev ? nextChord(prev, ev, key, this.style) : prev;
+    const bar = Math.floor(step / this.stepsPerBar);
+    const picked = ev.length || !prev ? nextChord(prev, ev, key, this.style, this.planner.chordBonus()) : prev;
+    const chord = vocabulary(key, { ...this.style, color: this.planner.colorFor(bar) })[picked.degree] ?? picked;
     const slot: ChordSlot = { step, dur: slotSteps, chord };
     this.liveChords.push(slot);
+    this.planner.logChord(step, prev, chord);
     // The orchestra follows how loudly you're singing right now.
     const recentNotes = melody.filter((n) => n.step + n.dur > step - 2 * STEPS_PER_BEAT);
     const sungLevel = recentNotes.length ? recentNotes.reduce((a, n) => a + n.vel, 0) / recentNotes.length : 0.6;
     const base = this.style.dynamicBase ?? 3;
-    const level = Math.max(0, Math.min(5, Math.round(base - 1 + (sungLevel - 0.35) * 4)));
+    const level = Math.max(0, Math.min(5, Math.round(base - 1 + (sungLevel - 0.35) * 4 + this.planner.dynShiftFor(bar))));
     for (const spec of this.style.parts) {
       if (spec.role === "melody" || spec.role === "double") continue;
-      const notes = generateSlot({ slot, next: null, style: this.style, spec, state: this.liveState.get(spec.id)! });
+      const played = this.planner.textureFor(spec, bar);
+      if (!played) continue; // resting this phrase
+      const notes = generateSlot({ slot, next: null, style: this.style, spec: played, state: this.liveState.get(spec.id)! });
       const partLevel = Math.max(0, Math.min(5, level + (["bass", "perc", "timpani", "swell"].includes(spec.role) ? 0 : -1)));
       notes.forEach((n) => (n.vel = Math.min(1, n.vel * DYN_GAIN[partLevel])));
       this.liveParts.get(spec.id)!.push(...notes);
@@ -408,7 +460,8 @@ export class Conductor {
   private tick() {
     const now = this.ctx.currentTime;
     const horizon = now + LOOKAHEAD;
-    const beatDur = this.stepDur * STEPS_PER_BEAT;
+    const beatDur = this.stepDur * this.pulse;
+    const perBar = pulsesPerBar(this.style);
 
     if (this.state === "countIn" || this.state === "recording") {
       if (this.state === "countIn" && now >= this.startTime) {
@@ -419,7 +472,7 @@ export class Conductor {
       while (this.startTime + this.nextClickBeat * beatDur < horizon) {
         const b = this.nextClickBeat;
         if (this.metronome || b < 0) {
-          click(this.ctx, this.mixer.clickOut, this.startTime + b * beatDur, ((b % this.style.beatsPerBar) + this.style.beatsPerBar) % this.style.beatsPerBar === 0);
+          click(this.ctx, this.mixer.clickOut, this.startTime + b * beatDur, ((b % perBar) + perBar) % perBar === 0);
         }
         this.nextClickBeat++;
       }
@@ -430,15 +483,19 @@ export class Conductor {
       }
     } else if (this.state === "playing") {
       const total = this.arrangement?.totalSteps ?? 0;
-      while (this.startTime + this.nextClickBeat * beatDur < horizon && this.nextClickBeat * STEPS_PER_BEAT < total) {
+      while (this.startTime + this.nextClickBeat * beatDur < horizon && this.nextClickBeat * this.pulse < total) {
         const b = this.nextClickBeat++;
-        if (this.clickOnPlay) click(this.ctx, this.mixer.clickOut, this.startTime + b * beatDur, b % this.style.beatsPerBar === 0);
+        if (this.clickOnPlay) click(this.ctx, this.mixer.clickOut, this.startTime + b * beatDur, b % perBar === 0);
       }
       while (this.cursor < this.events.length && this.stepTime(this.events[this.cursor].note.step) < horizon) {
         const e = this.events[this.cursor++];
         this.sound(e.part, e.note);
+        this.scheduledUntil = Math.max(this.scheduledUntil, e.note.step);
       }
       if (this.cursor >= this.events.length && now > this.startTime + total * this.stepDur + 0.2) {
+        // Letting a take play to the end is a gentle "this works".
+        this.planner.feedbackAll(0.1);
+        saveTaste(this.taste);
         if (this.loop) this.play(0);
         else {
           if (this.timer) clearInterval(this.timer);
@@ -478,6 +535,54 @@ export class Conductor {
       parts,
       totalSteps,
     });
+  }
+
+  // ---------------------------------------------------------------- taste
+
+  /**
+   * 👍 (r = +1) or 👎 (r = −1) on what's sounding now. A 👎 re-decides
+   * everything from the next bar, so you hear the change straight away.
+   */
+  feedback(r: number): Credit[] {
+    const active = this.state !== "idle";
+    const step = active ? Math.max(0, this.currentStep()) : 0;
+    let credits: Credit[];
+    if (active) credits = this.planner.feedback(r, step);
+    else {
+      // Rating the whole piece while stopped.
+      this.planner.feedbackAll(r * 0.5);
+      this.taste.ratings++;
+      credits = [];
+    }
+    saveTaste(this.taste);
+    if (r < 0) {
+      const nextBar = active ? Math.floor(step / this.stepsPerBar) + 1 : 0;
+      this.planner.resample(nextBar);
+      this.replan();
+    }
+    this.emit();
+    return credits;
+  }
+
+  /** Rebuild the arrangement with the planner's current choices; reschedule what hasn't played yet. */
+  private replan() {
+    if (!this.arrangement || this.state === "recording" || this.state === "countIn") return;
+    this.arrangement = arrange(this.arrangement.melody, this.style, { planner: this.planner, key: this.arrangement.key });
+    if (this.state === "playing") {
+      this.events = this.arrangement.parts
+        .flatMap((p) => p.notes.map((note) => ({ part: p.spec, note })))
+        .filter((e) => e.note.step > this.scheduledUntil)
+        .sort((a, b) => a.note.step - b.note.step);
+      this.cursor = 0;
+    }
+  }
+
+  resetTaste() {
+    this.taste.reset();
+    saveTaste(this.taste);
+    this.planner = new Planner(this.taste, this.style, this.adventure);
+    if (this.arrangement && this.state === "idle") this.arrangement = arrange(this.arrangement.melody, this.style, { planner: this.planner });
+    this.emit();
   }
 
   /** How loudly each part is sounding right now (0..1), for the stage view. */

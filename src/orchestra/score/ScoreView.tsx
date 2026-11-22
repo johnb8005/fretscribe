@@ -55,7 +55,7 @@ export function ScoreView({ conductor, version }: { conductor: Conductor | null;
         if (el) el.style.opacity = "0";
         return;
       }
-      const barSteps = conductor.style.beatsPerBar * STEPS_PER_BEAT;
+      const barSteps = conductor.style.beatsPerBar * STEPS_PER_BEAT; // quarters per bar × 4
       const step = conductor.currentStep();
       const bar = Math.floor(step / barSteps);
       const m = L.measures.find((x) => x.bar === bar);

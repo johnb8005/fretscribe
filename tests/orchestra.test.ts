@@ -264,3 +264,27 @@ describe("stage", () => {
     expect(at("harp")).toEqual(["harp"]);
   });
 });
+
+describe("metre", () => {
+  const { withMeter, pulseSteps, pulsesPerBar } = require("../src/orchestra/arranger/meter");
+  test("6/8 bars are 12 steps counted in two dotted-quarter beats", () => {
+    const s = withMeter(STYLE_BY_ID.romantic, [6, 8]);
+    expect(s.beatsPerBar * 4).toBe(12);
+    expect(pulseSteps(s)).toBe(6);
+    expect(pulsesPerBar(s)).toBe(2);
+    const a = arrange(DEMO_TUNE, s);
+    expect(a.totalSteps % 12).toBe(0);
+    expect(a.chords[1].step).toBe(12); // still a chord per bar
+  });
+  test("5/4 keeps quarter beats", () => {
+    const s = withMeter(STYLE_BY_ID.epic, [5, 4]);
+    expect(pulsesPerBar(s)).toBe(5);
+    expect(arrange(DEMO_TUNE, s).totalSteps % 20).toBe(0);
+  });
+  test("compound beats are notated as dotted quarters, never quarters across the beat", async () => {
+    const { pieces } = await import("../src/orchestra/score/engrave");
+    expect(pieces(0, 6, 12, true, true)).toEqual([6]);
+    expect(pieces(4, 4, 12, true, true)).toEqual([2, 2]); // crosses the beat → tied 8ths
+    expect(pieces(0, 12, 12, true, true)).toEqual([12]);
+  });
+});

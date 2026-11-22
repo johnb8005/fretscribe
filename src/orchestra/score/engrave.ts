@@ -18,6 +18,7 @@ import {
 import { pc, pcName } from "../../theory/theory";
 import { KIT, PATCH_BY_ID } from "../synth/patches";
 import { harmonicKey, isMinorKey } from "../arranger/harmony";
+import { isCompound, sigOf } from "../arranger/meter";
 import { STEPS_PER_BEAT, type Arrangement, type KeyInfo, type Part, type PartSpec, type QNote } from "../arranger/types";
 
 const INK = "#231d19";
@@ -113,7 +114,18 @@ const DUR: Record<number, [string, number]> = {
 const PIECES = [16, 12, 8, 6, 4, 3, 2, 1];
 
 /** May a note of `x` steps start at bar position `pos`? (standard beaming/beat rules) */
-function startsOk(x: number, pos: number, barSteps: number): boolean {
+function startsOk(x: number, pos: number, barSteps: number, compound = false): boolean {
+  if (compound) {
+    // Beats are dotted quarters (6 steps): nothing but whole beats crosses a beat.
+    switch (x) {
+      case 1: return true;
+      case 2: return pos % 2 === 0;
+      case 3: case 6: return pos % 6 === 0;
+      case 4: return pos % 2 === 0 && (pos % 6) + 4 <= 6;
+      case 12: return pos % 12 === 0;
+      default: return false;
+    }
+  }
   switch (x) {
     case 1: return true;
     case 2: return pos % 2 === 0;
@@ -126,12 +138,12 @@ function startsOk(x: number, pos: number, barSteps: number): boolean {
 }
 
 /** Split a length starting at bar position `pos` into notatable, beat-respecting pieces. */
-export function pieces(pos: number, len: number, barSteps: number, dotted = true): number[] {
+export function pieces(pos: number, len: number, barSteps: number, dotted = true, compound = false): number[] {
   const out: number[] = [];
   while (len > 0) {
     // In 4/4, keep the middle of the bar visible (no value straddles beat 3 unless it starts the bar).
     const half = barSteps === 16 ? 8 : Infinity;
-    const p = PIECES.find((x) => (dotted || DUR[x][1] === 0) && x <= len && pos + x <= barSteps && startsOk(x, pos, barSteps) && !(pos > 0 && pos < half && pos + x > half)) ?? 1;
+    const p = PIECES.find((x) => (dotted || DUR[x][1] === 0) && x <= len && pos + x <= barSteps && startsOk(x, pos, barSteps, compound) && !(pos > 0 && pos < half && pos + x > half)) ?? 1;
     out.push(p);
     pos += p;
     len -= p;
@@ -167,7 +179,7 @@ const SMUFL: Record<string, string> = { p: "\uE520", m: "\uE521", f: "\uE522", s
 export const dynamicGlyphs = (text: string) => [...text].map((c) => SMUFL[c] ?? c).join("");
 const DYN_TEXT = ["pp", "p", "mp", "mf", "f", "ff"];
 
-function buildMeasure(part: Part, clef: string, bar: number, barSteps: number, sp: Spelling): Built {
+function buildMeasure(part: Part, clef: string, bar: number, barSteps: number, sp: Spelling, compound = false): Built {
   const start = bar * barSteps;
   const end = start + barSteps;
   const inBar = part.notes.filter((n) => n.step < end && n.step + n.dur > start && n.step >= start);
@@ -198,7 +210,7 @@ function buildMeasure(part: Part, clef: string, bar: number, barSteps: number, s
       return;
     }
     // Copyists don't dot rests.
-    for (const p of pieces(pos - start, len, barSteps, false)) {
+    for (const p of pieces(pos - start, len, barSteps, compound, compound)) {
       const [d, dots] = DUR[p];
       const n = new StaveNote({ keys: [restKey], duration: d + "r", clef });
       if (dots) Dot.buildAndAttach([n], { all: true });
@@ -214,7 +226,7 @@ function buildMeasure(part: Part, clef: string, bar: number, barSteps: number, s
       : g.midis.map((m) => vfKey(m, sp));
     let prev: StaveNote | null = null;
     let pos = g.step;
-    for (const p of pieces(g.step - start, g.len, barSteps)) {
+    for (const p of pieces(g.step - start, g.len, barSteps, true, compound)) {
       const [d, dots] = DUR[p];
       const n = new StaveNote({ keys: keyed.map((k) => k.key), duration: d, clef, autoStem: true });
       if (clef !== "percussion" && !prev) {
@@ -316,6 +328,8 @@ export function engrave(el: HTMLElement, arr: Arrangement, opts: EngraveOptions)
   const patchOf = opts.patchOf ?? ((spec: PartSpec) => spec.patch);
   const clefs = parts.map((p) => clefFor(p, patchOf(p.spec)));
   const sp = spelling(arr.key);
+  const sig = sigOf(arr.style);
+  const compound = isCompound(sig);
   const keySpec = sp.sig;
   const sysH = CHORD_ROW + parts.length * STAVE_H + SYSTEM_GAP;
   const top = opts.tempo ? 34 : 0;
@@ -335,9 +349,10 @@ export function engrave(el: HTMLElement, arr: Arrangement, opts: EngraveOptions)
     ctx.fillText(term, NAME_W, 26);
     const tw = ctx.measureText(term).width;
     ctx.setFont("Bravura", 24);
-    ctx.fillText("\uECA5", NAME_W + tw + 14, 27);
+    // ♩ or ♩. (metNoteQuarterUp + metAugmentationDot)
+    ctx.fillText(compound ? "\uECA5\uECB7" : "\uECA5", NAME_W + tw + 14, 27);
     ctx.setFont("Barlow", 15, "500");
-    ctx.fillText(`= ${Math.round(opts.tempo.bpm)}`, NAME_W + tw + 30, 26);
+    ctx.fillText(`= ${Math.round(opts.tempo.bpm)}`, NAME_W + tw + (compound ? 38 : 30), 26);
     ctx.restore();
   }
 
@@ -370,16 +385,16 @@ export function engrave(el: HTMLElement, arr: Arrangement, opts: EngraveOptions)
         if (b === 0) {
           stave.addClef(clefs[pi]);
           if (clefs[pi] !== "percussion") stave.addKeySignature(keySpec);
-          if (bar === 0 || s === 0) stave.addTimeSignature(`${arr.beatsPerBar}/4`);
+          if (bar === 0 || s === 0) stave.addTimeSignature(`${sig[0]}/${sig[1]}`);
         }
         stave.setContext(ctx).draw();
         if (b === 0 && pi === 0) topStaves.push(stave);
         if (b === 0 && pi === parts.length - 1) bottomStaves.push(stave);
 
-        const built = buildMeasure(part, clefs[pi], bar, barSteps, sp);
-        const voice = new Voice({ numBeats: arr.beatsPerBar, beatValue: 4 }).setMode(Voice.Mode.SOFT);
+        const built = buildMeasure(part, clefs[pi], bar, barSteps, sp, compound);
+        const voice = new Voice({ numBeats: sig[0], beatValue: sig[1] }).setMode(Voice.Mode.SOFT);
         voice.addTickables(built.notes);
-        const beams = clefs[pi] === "percussion" ? [] : Beam.generateBeams(built.notes.filter((n) => !n.isRest()), { groups: [new Fraction(1, 4)] });
+        const beams = clefs[pi] === "percussion" ? [] : Beam.generateBeams(built.notes.filter((n) => !n.isRest()), { groups: [compound ? new Fraction(3, 8) : new Fraction(1, 4)] });
         new Formatter().joinVoices([voice]).format([voice], Math.max(40, stave.getNoteEndX() - stave.getNoteStartX() - 10));
         voice.draw(ctx, stave);
         beams.forEach((bm) => bm.setContext(ctx).draw());

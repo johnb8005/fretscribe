@@ -7,6 +7,7 @@ import { DEMO_TUNE } from "./arranger/arrange";
 import { STYLES, STYLE_BY_ID } from "./arranger/styles";
 import { FORMATIONS, FORMATION_BY_ID, applyFormation } from "./arranger/formations";
 import { TEMPO_TERMS, termFor } from "./arranger/tempo";
+import { TIME_SIGS, isCompound, pulseSteps, pulsesPerBar, sigOf, withMeter, type TimeSig } from "./arranger/meter";
 import { STEPS_PER_BEAT, type PartSpec } from "./arranger/types";
 import { Conductor } from "./conductor";
 import { ScoreView } from "./score/ScoreView";
@@ -42,6 +43,8 @@ export function OrchestraView() {
   const [styleId, setStyleId] = useState("epic");
   const [formationId, setFormationId] = useState("full");
   const [view, setView] = useState<"score" | "stage">("score");
+  const [sig, setSig] = useState<TimeSig | null>(null);
+  const [toast, setToast] = useState<{ text: string; good: boolean; id: number } | null>(null);
   const [devices, setDevices] = useState<InputDevice[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +54,8 @@ export function OrchestraView() {
   if (import.meta.env.DEV || import.meta.env.VITE_DEBUG) (window as unknown as Record<string, unknown>).fretscribeOrchestra = { engine, conductorRef };
   const c = conductorRef.current;
   const baseStyle = STYLE_BY_ID[styleId];
-  const style = useMemo(() => applyFormation(baseStyle, FORMATION_BY_ID[formationId]), [baseStyle, formationId]);
+  const style = useMemo(() => withMeter(applyFormation(baseStyle, FORMATION_BY_ID[formationId]), sig), [baseStyle, formationId, sig]);
+  const effective = (styleKey: string, f: string, m: TimeSig | null) => withMeter(applyFormation(STYLE_BY_ID[styleKey], FORMATION_BY_ID[f]), m);
 
   const ensure = (): Conductor => {
     if (conductorRef.current) return conductorRef.current;
@@ -95,10 +99,11 @@ export function OrchestraView() {
       let s = "";
       if (cond) {
         const barSteps = cond.style.beatsPerBar * STEPS_PER_BEAT;
+        const pulse = pulseSteps(cond.style);
         const step = cond.currentStep();
         const bar = Math.floor(step / barSteps) + 1;
-        const beat = Math.floor((step % barSteps) / STEPS_PER_BEAT) + 1;
-        if (cond.state === "countIn") s = `Count-in: ${Math.max(1, cond.style.beatsPerBar + Math.floor(step / STEPS_PER_BEAT) + 1)}`;
+        const beat = Math.floor((step % barSteps) / pulse) + 1;
+        if (cond.state === "countIn") s = `Count-in: ${Math.max(1, pulsesPerBar(cond.style) + Math.floor(step / pulse) + 1)}`;
         else if (cond.state === "recording") s = `Recording, bar ${bar}, beat ${beat}`;
         else if (cond.state === "playing") s = `Playing bar ${bar} of ${Math.ceil((cond.arrangement?.totalSteps ?? 0) / barSteps)}`;
       }
@@ -110,13 +115,49 @@ export function OrchestraView() {
 
   const pickStyle = (id: string) => {
     setStyleId(id);
-    conductorRef.current?.setStyle(applyFormation(STYLE_BY_ID[id], FORMATION_BY_ID[formationId]));
+    setSig(null); // each style comes with its own metre
+    conductorRef.current?.setStyle(effective(id, formationId, null), "style");
   };
 
   const pickFormation = (id: string) => {
     setFormationId(id);
-    conductorRef.current?.setStyle(applyFormation(STYLE_BY_ID[styleId], FORMATION_BY_ID[id]));
+    conductorRef.current?.setStyle(effective(styleId, id, sig), "keep");
   };
+
+  const pickMeter = (m: TimeSig | null) => {
+    setSig(m);
+    conductorRef.current?.setStyle(effective(styleId, formationId, m), "convert");
+  };
+
+  const rate = (r: number) => {
+    const cond = ensure();
+    const credits = cond.feedback(r);
+    const what = credits.map((c) => c.label).join(", ");
+    const text = r > 0
+      ? what ? `Noted. More ${what}.` : "Noted. More like this."
+      : what ? `Noted. Less ${what}, changing from the next bar.` : "Noted. Trying something else.";
+    setToast({ text, good: r > 0, id: Date.now() });
+  };
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // L / ↑ = like, D / ↓ = dislike (unless you're typing or turning a knob).
+  const rateRef = useRef(rate);
+  rateRef.current = rate;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.closest("input, select, textarea, [role=slider]") || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "l" || e.key === "L" || e.key === "ArrowUp") { e.preventDefault(); rateRef.current(1); }
+      else if (e.key === "d" || e.key === "D" || e.key === "ArrowDown") { e.preventDefault(); rateRef.current(-1); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const record = async () => {
     setError(null);
@@ -238,8 +279,19 @@ export function OrchestraView() {
             step={1}
             defaultValue={style.bpm}
             onChange={(v) => ensure().setTempo(Math.round(v))}
-            format={(v) => `♩ = ${Math.round(v)}`}
+            format={(v) => `${isCompound(sigOf(style)) ? "♩." : "♩"} = ${Math.round(v)}`}
           />
+          <select
+            aria-label="Time signature"
+            value={sig ? sig.join("/") : ""}
+            onChange={(e) => pickMeter(e.target.value ? (e.target.value.split("/").map(Number) as TimeSig) : null)}
+            className="rounded-md border border-grain bg-ebony px-2 py-1.5 font-gear text-lg font-semibold text-bone"
+          >
+            <option value="">{sigOf(baseStyle).join("/")} (style)</option>
+            {TIME_SIGS.map((t) => (
+              <option key={t.join("/")} value={t.join("/")}>{t.join("/")}{isCompound(t) ? ", compound" : ""}</option>
+            ))}
+          </select>
           <select
             aria-label="Tempo marking"
             value={termFor(bpm).name}
@@ -280,6 +332,44 @@ export function OrchestraView() {
           <p className="mt-1 text-sm text-nickel">Allow microphone access for Fretscribe in your system settings, then press Record again.</p>
         </div>
       )}
+
+      {/* Taste feedback */}
+      <section aria-label="Your reaction" className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-grain px-4 py-3">
+        <p className="font-gear text-lg font-semibold text-bone">Like what you hear?</p>
+        <button
+          type="button"
+          onClick={() => rate(1)}
+          title="More like this (L or ↑)"
+          className="flex items-center gap-2 rounded-full border border-lamp/70 px-4 py-1.5 font-gear text-lg font-semibold text-bone hover:bg-lamp hover:text-ink"
+        >
+          <Thumb up /> More like this
+        </button>
+        <button
+          type="button"
+          onClick={() => rate(-1)}
+          title="Not this (D or ↓)"
+          className="flex items-center gap-2 rounded-full border border-jewel/70 px-4 py-1.5 font-gear text-lg font-semibold text-bone hover:bg-jewel hover:text-ink"
+        >
+          <Thumb /> Not this
+        </button>
+        <Knob
+          label="Adventurous"
+          value={c?.adventurous ?? 0.35}
+          min={0}
+          max={1}
+          step={0.01}
+          defaultValue={0.35}
+          onChange={(v) => { ensure().adventurous = v; bump(); }}
+          format={(v) => (v < 0.2 ? "Stick to the style" : v > 0.7 ? "Surprise me" : "A little")}
+        />
+        <p className="ml-auto min-h-6 text-sm" aria-live="polite">
+          {toast ? (
+            <span key={toast.id} className={toast.good ? "text-lamp" : "text-jewel"}>{toast.text}</span>
+          ) : (
+            <span className="text-nickel">Press L or D any time while you hum or listen. Changes start from the next bar.</span>
+          )}
+        </p>
+      </section>
 
       {/* Score */}
       <section aria-label="Score">
@@ -324,6 +414,8 @@ export function OrchestraView() {
         </div>
       </section>
 
+      <TastePanel conductor={c} onReset={() => { ensure().resetTaste(); bump(); }} />
+
       <section aria-label="Hall and master" className="border-t border-grain pt-8 pb-6">
         <h2 className="mb-4 font-gear text-[15px] font-semibold text-nickel">Hall and master</h2>
         <div className="flex flex-wrap gap-x-8 gap-y-5">
@@ -337,6 +429,64 @@ export function OrchestraView() {
         </div>
       </section>
     </main>
+  );
+}
+
+function Thumb({ up = false }: { up?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className={`size-5 ${up ? "" : "rotate-180"}`} aria-hidden fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round">
+      <path d="M7 10v10H4V10h3Zm0 0 4-7c1.5 0 2.5 1 2.2 2.6L12.6 9H19a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7" />
+    </svg>
+  );
+}
+
+function TastePanel({ conductor, onReset }: { conductor: Conductor | null; onReset: () => void }) {
+  const entries = conductor?.taste.summary(2) ?? [];
+  const likes = entries.filter((e) => e.mean > 0.05).slice(0, 6);
+  const dislikes = entries.filter((e) => e.mean < -0.05).slice(0, 6);
+  const ratings = conductor?.taste.ratings ?? 0;
+  const max = Math.max(0.3, ...entries.map((e) => Math.abs(e.mean)));
+  const List = ({ items, tone }: { items: typeof entries; tone: "lamp" | "jewel" }) => (
+    <ul className="space-y-1.5">
+      {items.map((e) => (
+        <li key={e.key} className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 text-[15px]">
+          <span className="truncate text-bone-dim" title={`${e.n} ratings`}>{e.label}</span>
+          <span className="h-1.5 overflow-hidden rounded-full bg-ebony">
+            <span className={`block h-full ${tone === "lamp" ? "bg-lamp" : "bg-jewel"}`} style={{ width: `${(Math.abs(e.mean) / max) * 100 * (0.4 + 0.6 * e.confidence)}%` }} />
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+  return (
+    <section aria-label="Your taste" className="border-t border-grain pt-8">
+      <div className="mb-4 flex flex-wrap items-baseline gap-4">
+        <h2 className="font-gear text-[15px] font-semibold text-nickel">Your taste</h2>
+        <span className="text-sm text-nickel">{ratings === 0 ? "Nothing learned yet." : `Learned from ${ratings} reaction${ratings === 1 ? "" : "s"}, saved on this device.`}</span>
+        {ratings > 0 && (
+          <button type="button" onClick={onReset} className="ml-auto text-sm text-nickel underline decoration-grain underline-offset-4 hover:text-bone">
+            Forget my taste
+          </button>
+        )}
+      </div>
+      {ratings === 0 ? (
+        <p className="max-w-2xl text-bone-dim">
+          Every reaction teaches it. It learns which textures, chord colours and chord moves you like, then leans that way in every style while
+          still trying new things now and then (turn up Adventurous for more of that).
+        </p>
+      ) : (
+        <div className="grid max-w-4xl gap-8 md:grid-cols-2">
+          <div>
+            <p className="mb-2 font-gear text-lg font-semibold text-lamp">You like</p>
+            {likes.length ? <List items={likes} tone="lamp" /> : <p className="text-nickel">Not sure yet.</p>}
+          </div>
+          <div>
+            <p className="mb-2 font-gear text-lg font-semibold text-jewel">Not for you</p>
+            {dislikes.length ? <List items={dislikes} tone="jewel" /> : <p className="text-nickel">Nothing yet.</p>}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -354,10 +504,11 @@ function BeatLight({ conductor }: { conductor: Conductor | null }) {
         el.dataset.on = "";
         return;
       }
-      const beats = c.currentStep() / STEPS_PER_BEAT;
+      const beats = c.currentStep() / pulseSteps(c.style);
       const beat = Math.floor(beats);
       const on = beats - beat < 0.18;
-      const down = ((beat % c.style.beatsPerBar) + c.style.beatsPerBar) % c.style.beatsPerBar === 0;
+      const per = pulsesPerBar(c.style);
+      const down = ((beat % per) + per) % per === 0;
       el.dataset.on = on ? (down ? "down" : "beat") : "";
     };
     loop();

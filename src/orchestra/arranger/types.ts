@@ -87,6 +87,8 @@ export interface PartSpec {
   cell?: number[];
   /** pad: number of voices. */
   voices?: number;
+  /** pad: re-strike the chord every N steps instead of holding it. */
+  restrike?: number;
   /** pulse: bar positions (steps) to strike; and note length. */
   at?: number[];
   hitDur?: number;
@@ -111,7 +113,10 @@ export interface StyleDef {
   name: string;
   blurb: string;
   bpm: number;
+  /** Bar length in quarter notes (6/8 → 3). */
   beatsPerBar: number;
+  /** Written time signature, when it isn't n/4 (e.g. [6, 8]). */
+  timeSig?: [number, number];
   /** 0..1 — delays off-beat 8ths up to a triplet feel. */
   swing: number;
   /** Beats per chord. */

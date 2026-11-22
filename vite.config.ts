@@ -2,16 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const host = process.env.TAURI_DEV_HOST;
-
+// GitHub Pages serves the app from /<repo>/; CI sets VITE_BASE accordingly.
 export default defineConfig({
+  base: process.env.VITE_BASE ?? "/",
   plugins: [react(), tailwindcss()],
-  clearScreen: false,
-  server: {
-    port: 1420,
-    strictPort: true,
-    host: host || false,
-    hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
-    watch: { ignored: ["**/src-tauri/**"] },
-  },
+  server: { port: 1420 },
+  build: { chunkSizeWarningLimit: 2000 },
 });

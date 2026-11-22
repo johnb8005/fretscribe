@@ -9,7 +9,8 @@
 import { pc } from "../../theory/theory";
 import { KIT } from "../synth/patches";
 import { applyDynamics } from "./dynamics";
-import { harmonize, keyFromMelody } from "./harmony";
+import { harmonize, keyFromMelody, vocabulary } from "./harmony";
+import type { Planner } from "../taste/planner";
 import { STEPS_PER_BEAT, type Arrangement, type Chord, type ChordSlot, type KeyInfo, type Part, type PartSpec, type QNote, type StyleDef } from "./types";
 
 const PHRASE_BARS = 4;
@@ -107,7 +108,8 @@ export function generateSlot({ slot, next, style, spec, state }: SlotContext): Q
     case "pad": {
       const v = voiceChord(chordPcs(chord), spec.voices ?? 3, reg, state.voicing ?? null);
       state.voicing = v;
-      v.forEach((m) => push(m, slot.step, slot.dur, v0));
+      const every = spec.restrike ?? slot.dur;
+      for (let s = slot.step; s < end; s += every) v.forEach((m) => push(m, s, every, v0 * (s === slot.step ? 1 : 0.85)));
       break;
     }
     case "pulse": {
@@ -289,21 +291,52 @@ export function totalStepsFor(melody: QNote[], style: StyleDef): number {
   return Math.max(bar, Math.ceil(last / bar) * bar);
 }
 
-export function arrange(melody: QNote[], style: StyleDef, opts: { key?: KeyInfo; chords?: ChordSlot[]; totalSteps?: number } = {}): Arrangement {
+export function arrange(
+  melody: QNote[],
+  style: StyleDef,
+  opts: { key?: KeyInfo; chords?: ChordSlot[]; totalSteps?: number; planner?: Planner } = {},
+): Arrangement {
   const totalSteps = opts.totalSteps ?? totalStepsFor(melody, style);
   const key = opts.key ?? keyFromMelody(melody, undefined, style.beatsPerBar * STEPS_PER_BEAT);
-  const chords = opts.chords ?? harmonize(melody, totalSteps, key, style);
+  const planner = opts.planner;
+  const barSteps = style.beatsPerBar * STEPS_PER_BEAT;
+  let chords = opts.chords ?? harmonize(melody, totalSteps, key, style, planner?.chordBonus());
+
+  if (planner) {
+    // Chord colour per phrase (triads / 7ths / 9ths), as you've taught it.
+    const vocabs = new Map<string, ReturnType<typeof vocabulary>>();
+    const vocabFor = (color: StyleDef["color"]) => {
+      if (!vocabs.has(color)) vocabs.set(color, vocabulary(key, { ...style, color }));
+      return vocabs.get(color)!;
+    };
+    chords = chords.map((slot) => ({ ...slot, chord: vocabFor(planner.colorFor(Math.floor(slot.step / barSteps)))[slot.chord.degree] }));
+    planner.clearChords();
+    chords.forEach((slot, i) => planner.logChord(slot.step, chords[i - 1]?.chord ?? null, slot.chord));
+  }
+
   const melodySpec = style.parts.find((p) => p.role === "melody") ?? style.parts[0];
 
   const parts: Part[] = style.parts.map((spec) => {
-    if (spec.role === "melody" || spec.role === "double") return { spec, notes: melodyPart(spec, melody, melodySpec) };
+    if (spec.role === "melody" || spec.role === "double") {
+      let notes = melodyPart(spec, melody, melodySpec);
+      if (planner && spec.role === "double") notes = notes.filter((n) => planner.textureFor(spec, Math.floor(n.step / barSteps)) !== null);
+      return { spec, notes };
+    }
     const state: GenState = {};
     const notes: QNote[] = [];
-    chords.forEach((slot, i) => notes.push(...generateSlot({ slot, next: chords[i + 1]?.chord ?? null, style, spec, state })));
+    chords.forEach((slot, i) => {
+      const s = planner ? planner.textureFor(spec, Math.floor(slot.step / barSteps)) : spec;
+      if (!s) return; // tacet
+      notes.push(...generateSlot({ slot, next: chords[i + 1]?.chord ?? null, style, spec: s, state }));
+    });
     return { spec, notes };
   });
 
-  return applyDynamics({ style, key, beatsPerBar: style.beatsPerBar, melody, chords, parts, totalSteps });
+  return applyDynamics(
+    { style, key, beatsPerBar: style.beatsPerBar, melody, chords, parts, totalSteps },
+    style.dynamicBase ?? 3,
+    planner ? (bar) => planner.dynShiftFor(bar) : undefined,
+  );
 }
 
 // ------------------------------------------------------------------ quantisation

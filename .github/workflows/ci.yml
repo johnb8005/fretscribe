@@ -9,51 +9,34 @@ on:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   test:
-    name: Test & build check
-    runs-on: ubuntu-22.04
+    name: Test & build
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Install JS dependencies
+      - name: Install dependencies
         run: bun install --frozen-lockfile
-
-      - name: Unit tests (synthetic guitar audio)
+      - name: Unit tests (synthetic guitar + humming audio)
         run: bun test
-
-      - name: Typecheck + frontend build
+      - name: Typecheck + build
         run: bun run build
 
-      - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Check Rust shell
-        working-directory: src-tauri
-        run: cargo check --locked
-
   release:
-    name: Tag & Linux release
+    name: Tag, deploy to GitHub Pages, release
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     concurrency:
       group: release
       cancel-in-progress: false
@@ -91,51 +74,36 @@ jobs:
           echo "tag=$next" >> "$GITHUB_OUTPUT"
           echo "version=${next#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Stamp version into manifests
-        if: steps.version.outputs.skip != 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
-          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tauri.tmp && mv tauri.tmp src-tauri/tauri.conf.json
-          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" src-tauri/Cargo.toml
-
       - uses: oven-sh/setup-bun@v2
         if: steps.version.outputs.skip != 'true'
         with:
           bun-version: latest
 
-      - name: Install dependencies
-        if: steps.version.outputs.skip != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf rpm
-          bun install --frozen-lockfile
-
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.version.outputs.skip != 'true'
-
-      - uses: Swatinem/rust-cache@v2
-        if: steps.version.outputs.skip != 'true'
-        with:
-          workspaces: src-tauri
-
-      - name: Build Linux bundles (.deb, .rpm, .AppImage)
-        if: steps.version.outputs.skip != 'true'
-        run: bun tauri build --bundles deb,rpm,appimage
-
-      - name: Collect artifacts
+      - name: Build for Pages
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          VITE_BASE: /${{ github.event.repository.name }}/
         run: |
-          mkdir -p out
-          b=src-tauri/target/release/bundle
-          cp $b/deb/*.deb $b/rpm/*.rpm $b/appimage/*.AppImage out/
-          cp src-tauri/target/release/fretscribe "out/fretscribe-$VERSION-linux-x86_64"
-          chmod +x out/*.AppImage "out/fretscribe-$VERSION-linux-x86_64"
-          (cd out && sha256sum * > SHA256SUMS)
-          ls -lh out
+          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
+          bun install --frozen-lockfile
+          bun run build
+          (cd dist && zip -qr "../fretscribe-web-$VERSION.zip" .)
+
+      - uses: actions/configure-pages@v5
+        if: steps.version.outputs.skip != 'true'
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.version.outputs.skip != 'true'
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        if: steps.version.outputs.skip != 'true'
+        uses: actions/deploy-pages@v4
 
       - name: Create tag + GitHub release
         if: steps.version.outputs.skip != 'true'
@@ -145,4 +113,8 @@ jobs:
           name: Fretscribe ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
-          files: out/*
+          body: |
+            **Open the app:** ${{ steps.deploy.outputs.page_url }}
+
+            The attached zip is the static site, if you want to host it yourself.
+          files: fretscribe-web-${{ steps.version.outputs.version }}.zip

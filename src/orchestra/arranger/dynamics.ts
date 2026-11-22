@@ -25,7 +25,7 @@ const ROLE_OFFSET: Partial<Record<Role, number>> = {
 const PHRASE = 4;
 
 /** Orchestra-wide dynamic level (0 = pp … 5 = ff) for each bar. */
-export function formDynamics(arr: Arrangement, base = 3): number[] {
+export function formDynamics(arr: Arrangement, base = 3, shift?: (bar: number) => number): number[] {
   const barSteps = arr.beatsPerBar * STEPS_PER_BEAT;
   const bars = Math.max(1, Math.ceil(arr.totalSteps / barSteps));
   const vels = arr.melody.map((n) => n.vel);
@@ -40,7 +40,7 @@ export function formDynamics(arr: Arrangement, base = 3): number[] {
     const arc = [0, 0.4, 1, 0.2][b % PHRASE];
     const climax = bars > PHRASE && Math.floor(b / PHRASE) === lastPhrase ? 1 : 0;
     const ending = b === bars - 1 && bars > 1 ? -0.6 : 0;
-    raw.push(base + Math.max(-2, Math.min(2, energy)) + arc + climax + ending);
+    raw.push(base + Math.max(-2, Math.min(2, energy)) + arc + climax + ending + (shift?.(b) ?? 0));
   }
   // Round and limit jumps to one level per bar (unless the singer really jumped).
   const out: number[] = [];
@@ -53,9 +53,9 @@ export function formDynamics(arr: Arrangement, base = 3): number[] {
 }
 
 /** Fill in part levels, scale velocities (with hairpins) and mark sfz accents. */
-export function applyDynamics(arr: Arrangement, base = arr.style.dynamicBase ?? 3): Arrangement {
+export function applyDynamics(arr: Arrangement, base = arr.style.dynamicBase ?? 3, shift?: (bar: number) => number): Arrangement {
   const barSteps = arr.beatsPerBar * STEPS_PER_BEAT;
-  const form = formDynamics(arr, base);
+  const form = formDynamics(arr, base, shift);
   const climaxBar = form.indexOf(Math.max(...form));
   const big = form[climaxBar] >= 4;
 
