@@ -25,6 +25,11 @@ export interface TrackerConfig {
   onsetRatio: number;
   /** Frames an onset stays "armed" waiting for a clear pitch. */
   onsetLatch: number;
+  /** Extra semitones a pitch may drift from the sounding note before it
+   *  counts as a new note (0 for guitar; ~0.3 for voice vibrato/scoops). */
+  hysteresis: number;
+  /** How far behind "now" the pitch detector's window is centred (s). */
+  pitchLag: number;
 }
 
 export const DEFAULT_TRACKER: TrackerConfig = {
@@ -34,6 +39,8 @@ export const DEFAULT_TRACKER: TrackerConfig = {
   releaseFrames: 6,
   onsetRatio: 1.6,
   onsetLatch: 8,
+  hysteresis: 0,
+  pitchLag: 0.03,
 };
 
 export type TrackerListener = (type: "on" | "off", note: NoteEvent) => void;
@@ -43,6 +50,7 @@ export class NoteTracker {
   active: NoteEvent | null = null;
   private candidate = -1;
   private candidateCount = 0;
+  private candidateStart = 0;
   private missCount = 0;
   private prevShort = 0;
   private onsetArmed = 0;
@@ -98,7 +106,9 @@ export class NoteTracker {
       if (this.active && ++this.missCount >= cfg.releaseFrames) this.release(t);
       return;
     }
-    const midi = Math.round(freqToMidiFloat(pitch.freq));
+    const mf = freqToMidiFloat(pitch.freq);
+    const midi =
+      this.active && Math.abs(mf - this.active.midi) < 0.5 + cfg.hysteresis ? this.active.midi : Math.round(mf);
     // A different (not yet stable) pitch also counts against the sounding note,
     // otherwise a note can "hang" through a strummed chord.
     if (this.active && this.active.midi !== midi) {
@@ -109,6 +119,7 @@ export class NoteTracker {
     else {
       this.candidate = midi;
       this.candidateCount = 1;
+      this.candidateStart = t;
     }
 
     if (this.active && this.active.midi === midi) {
@@ -127,7 +138,8 @@ export class NoteTracker {
     }
     this.sameSinceOnset = 0;
     if (this.candidateCount >= cfg.stableFrames) {
-      const start = this.onsetArmed > 0 ? this.onsetTime : t;
+      // Legato notes have no attack: date them from when the new pitch first appeared.
+      const start = this.onsetArmed > 0 ? this.onsetTime : Math.max(this.active?.start ?? -Infinity, this.candidateStart - cfg.pitchLag);
       this.onsetArmed = 0;
       this.attack(midi, pitch.freq, start, level);
     } else if (this.onsetArmed > 0) this.onsetArmed--;

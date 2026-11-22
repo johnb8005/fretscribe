@@ -4,7 +4,7 @@
 import { FFT } from "../dsp/fft";
 import { YinDetector, rms, type PitchResult } from "../dsp/pitch";
 import { SpectralAnalyzer } from "../dsp/spectral";
-import { NoteTracker, type NoteEvent } from "../dsp/noteTracker";
+import { NoteTracker, type NoteEvent, type TrackerConfig } from "../dsp/noteTracker";
 import { ChordHMM, KeyDetector, type ChordCandidate, type KeyEstimate } from "../theory/markov";
 import { freqToMidiFloat, pc } from "../theory/theory";
 
@@ -21,6 +21,25 @@ export interface ChordChange {
   start: number;
 }
 
+export interface AnalyzerOptions {
+  minFreq?: number;
+  maxFreq?: number;
+  tracker?: Partial<TrackerConfig>;
+  /** Follow a singer who is consistently sharp/flat (circular mean of detune). */
+  adaptiveTuning?: boolean;
+  /** Skip FFT / chroma / chord HMM (e.g. for monophonic voice input). */
+  chords?: boolean;
+}
+
+/** Hum / whistle settings: wide range, sticky notes, adaptive tuning. */
+export const VOICE_OPTIONS: AnalyzerOptions = {
+  minFreq: 75,
+  maxFreq: 2400,
+  adaptiveTuning: true,
+  chords: false,
+  tracker: { hysteresis: 0.3, minClarity: 0.75, stableFrames: 4, releaseFrames: 8, gate: 0.006 },
+};
+
 export interface AnalysisFrame {
   t: number;
   level: number;
@@ -30,6 +49,8 @@ export interface AnalysisFrame {
   chords: ChordCandidate[];
   chord: ChordCandidate | null;
   key: KeyEstimate;
+  /** Current tuning reference offset in cents (adaptive tuning). */
+  tuningCents: number;
 }
 
 export class Analyzer {
@@ -37,7 +58,11 @@ export class Analyzer {
   readonly fft = new FFT(FFT_SIZE);
   readonly yin: YinDetector;
   readonly spectral: SpectralAnalyzer;
-  readonly tracker = new NoteTracker();
+  readonly tracker: NoteTracker;
+  readonly options: AnalyzerOptions;
+  private tuneC = 0;
+  private tuneS = 0;
+  private tuningOffset = 0; // semitones
   readonly keys = new KeyDetector();
   readonly chordHmm = new ChordHMM();
 
@@ -57,9 +82,11 @@ export class Analyzer {
   /** Longer hold before a chord is written into the progression log. */
   progressionHold = 0.35;
 
-  constructor(sampleRate: number) {
+  constructor(sampleRate: number, options: AnalyzerOptions = {}) {
     this.sampleRate = sampleRate;
-    this.yin = new YinDetector(sampleRate);
+    this.options = options;
+    this.tracker = new NoteTracker(options.tracker);
+    this.yin = new YinDetector(sampleRate, 2048, options.minFreq ?? 70, options.maxFreq ?? 1400);
     this.spectral = new SpectralAnalyzer(sampleRate, FFT_SIZE);
     this.keyEstimate = this.keys.analyze();
 
@@ -101,14 +128,37 @@ export class Analyzer {
     const level = rms(samples, 2048);
     const gated = level >= this.tracker.cfg.gate;
 
-    const raw = this.yin.detect(samples);
+    let raw = this.yin.detect(samples);
+    if (raw && this.options.adaptiveTuning && gated && raw.clarity > 0.85) {
+      // Circular mean of the fractional semitone: a singer 40¢ flat stays "in tune".
+      const frac = freqToMidiFloat(raw.freq);
+      const a = 2 * Math.PI * frac;
+      this.tuneC = this.tuneC * 0.985 + Math.cos(a) * 0.015;
+      this.tuneS = this.tuneS * 0.985 + Math.sin(a) * 0.015;
+      if (Math.hypot(this.tuneC, this.tuneS) > 0.2) this.tuningOffset = Math.atan2(this.tuneS, this.tuneC) / (2 * Math.PI);
+    }
+    if (raw && this.tuningOffset !== 0) raw = { ...raw, freq: raw.freq * Math.pow(2, -this.tuningOffset / 12) };
+
     let pitch: PitchInfo | null = null;
     if (raw && gated && raw.clarity >= this.tracker.cfg.minClarity) {
       const mf = freqToMidiFloat(raw.freq);
-      const midi = Math.round(mf);
+      const active = this.tracker.active;
+      const hyst = this.tracker.cfg.hysteresis;
+      const midi = active && Math.abs(mf - active.midi) < 0.5 + hyst ? active.midi : Math.round(mf);
       pitch = { ...raw, midi, cents: (mf - midi) * 100 };
     }
     this.tracker.update(raw, level, t, rms(samples, 512));
+
+    if (this.options.chords === false) {
+      if (t - this.lastKeyUpdate > 0.25) {
+        this.keyEstimate = this.keys.analyze();
+        this.lastKeyUpdate = t;
+      }
+      return {
+        t, level, pitch, activeNote: this.tracker.active, chroma: [], chords: [], chord: null,
+        key: this.keyEstimate, tuningCents: this.tuningOffset * 100,
+      };
+    }
 
     const mags = this.fft.magnitude(samples);
     this.spectral.process(mags);
@@ -165,6 +215,7 @@ export class Analyzer {
       chords,
       chord: this.currentChord,
       key: this.keyEstimate,
+      tuningCents: this.tuningOffset * 100,
     };
   }
 
@@ -177,5 +228,6 @@ export class Analyzer {
     this.chroma.fill(0);
     this.currentChord = null;
     this.keyEstimate = this.keys.analyze();
+    this.tuneC = this.tuneS = this.tuningOffset = 0;
   }
 }

@@ -1,6 +1,6 @@
 // Karplus–Strong plucked-string synth + a frame driver mimicking the live app.
 
-import { Analyzer, FFT_SIZE, type AnalysisFrame } from "../src/analysis/pipeline";
+import { Analyzer, FFT_SIZE, type AnalysisFrame, type AnalyzerOptions } from "../src/analysis/pipeline";
 import { midiToFreq } from "../src/theory/theory";
 
 export const SR = 48000;
@@ -64,8 +64,9 @@ export function run(
   audio: Float32Array,
   onFrame?: (f: AnalysisFrame, a: Analyzer) => void,
   jitter = false,
+  options?: AnalyzerOptions,
 ): Analyzer {
-  const a = new Analyzer(SR);
+  const a = new Analyzer(SR, options);
   const win = new Float32Array(FFT_SIZE);
   let r = 7;
   // Browsers deliver frames irregularly (rAF + 128-sample render quanta).

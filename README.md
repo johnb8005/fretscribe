@@ -1,4 +1,4 @@
-# Fretscribe 🎸
+# Fretscribe 🎸🎻
 
 [![CI](https://github.com/johnb8005/fretscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/johnb8005/fretscribe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/johnb8005/fretscribe)](https://github.com/johnb8005/fretscribe/releases/latest)
@@ -9,6 +9,11 @@ inferred live using music theory + Markov models.
 
 Tauri v2 · Bun · React 19 · TypeScript. All DSP runs in TypeScript inside the webview (Web Audio);
 Rust is only the native shell (window + microphone permission).
+
+Two modes:
+
+- **Guitar:** play, and it writes the notes as tab in real time, with waveform, spectrum, scale and chord detection.
+- **Orchestra:** hum or whistle a tune, and an orchestra plays it back in the style you choose. A full score is engraved as you sing.
 
 ## Run
 
@@ -21,7 +26,7 @@ bun tauri dev        # desktop app
 bun tauri build      # installer / .app / .deb in src-tauri/target/release/bundle
 
 bun run dev          # same UI in a browser at http://localhost:1420 (handy for hacking)
-bun test             # 23 tests on synthetic Karplus-Strong guitar audio
+bun test             # 64 tests on synthetic guitar and humming audio
 ```
 
 **Microphone permission**
@@ -43,6 +48,50 @@ Each green build of `main` is published on the [Releases](https://github.com/joh
 - `.deb` for Debian and Ubuntu, `.rpm` for Fedora and openSUSE
 - `fretscribe-<version>-linux-x86_64`: the bare binary (needs WebKitGTK 4.1 installed)
 - `SHA256SUMS` to verify the downloads
+
+## Orchestra mode
+
+1. Pick a style (Epic film, Romantic symphony, Baroque chamber, Impressionist, Minimalist,
+   Fairy-tale waltz, Noir jazz) and an ensemble (full orchestra, chamber orchestra, string
+   quartet, wind quintet, brass quintet, solo piano).
+2. Press **Record**, wait for the one-bar count-in, then hum or whistle. Use headphones so the
+   orchestra doesn't leak into the mic.
+3. While you sing, the accompaniment follows you: it picks each chord from what you just sang,
+   and its loudness follows yours. The lead instrument doubles your voice live.
+4. Press **Stop**. The take is quantised and re-harmonised with the whole melody known, and the
+   full score appears. Press **Play**, switch styles or ensembles, swap instruments and tweak
+   the mix.
+
+Or press **Try the demo tune** to hear *Ode to Joy* without singing.
+
+**Score:** engraved with VexFlow and the Bravura font, both bundled. It shows key and time
+signatures, a tempo mark (e.g. *Andante* ♩ = 88), chord symbols, beams, ties, accidentals,
+dynamics (pp to ff) with hairpins, and sfz accents.
+
+**Stage:** a seating plan of the orchestra. Each section lights up as it plays, brighter when
+louder. Click a section to mute it.
+
+**Synthesis, not samples or MIDI:** every instrument is built in Web Audio (`src/orchestra/synth/patches.ts`):
+
+- Strings are detuned sawtooth stacks with filter envelopes, body resonances and delayed vibrato.
+- Brass gets a filter "blat" and a pitch scoop; the muted trumpet uses a harmon-mute formant.
+- Flute is triangle plus breath noise. Clarinet, oboe and bassoon use custom harmonic spectra.
+- The choir is formant-filtered sawtooths. Harp, harpsichord and piano are plucked/struck subtractive voices.
+- Celesta, glockenspiel and marimba use FM.
+- Timpani use membrane partials, plus there are taiko, a suspended-cymbal swell, brushes, an FM ride and a triangle.
+
+Everything runs through a generated concert-hall impulse response, a ping-pong echo, warmth/air
+EQ, a glue compressor and a limiter.
+
+**How it decides:**
+
+- **Pitch:** YIN pitch tracking tuned for voice: wide range, sticky notes through vibrato,
+  adaptive tuning for a singer who's sharp or flat, and onsets back-dated for legato glides.
+- **Key:** the Markov key model plus a cadence and downbeat prior. Melodies end on the tonic,
+  and downbeats sit on tonic-chord notes.
+- **Chords:** a functional-harmony Markov chain (ii→V→I, IV→V, vi→IV…) re-weighted per style.
+  Chosen greedily while you sing, then by Viterbi over the whole take.
+- **Dynamics:** come from your sung loudness, the shape of each phrase, and the climax in the last phrase.
 
 ## CI and versioning
 

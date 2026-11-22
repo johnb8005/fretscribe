@@ -182,7 +182,7 @@ export class KeyDetector {
     });
   }
 
-  analyze(): KeyEstimate {
+  analyze(topN = 6): KeyEstimate {
     const P = this.transitionMatrix();
     const observed = this.observedMatrix();
     const pi = this.stationary(P);
@@ -219,7 +219,7 @@ export class KeyDetector {
     for (const s of scored) s.prob /= z;
     scored.sort((a, b) => b.prob - a.prob);
 
-    return { candidates: scored.slice(0, 6), best: scored[0], histogram, stationary: pi, transitions: P, observed, noteWeight: histSum };
+    return { candidates: scored.slice(0, topN), best: scored[0], histogram, stationary: pi, transitions: P, observed, noteWeight: histSum };
   }
 }
 

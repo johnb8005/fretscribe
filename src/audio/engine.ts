@@ -1,6 +1,6 @@
 // Web Audio capture → Analyzer, driven by requestAnimationFrame.
 
-import { Analyzer, FFT_SIZE, type AnalysisFrame } from "../analysis/pipeline";
+import { Analyzer, FFT_SIZE, type AnalysisFrame, type AnalyzerOptions } from "../analysis/pipeline";
 
 export type FrameListener = (frame: AnalysisFrame, engine: AudioEngine) => void;
 
@@ -9,7 +9,15 @@ export interface InputDevice {
   label: string;
 }
 
+export interface EngineOptions {
+  analyzer?: AnalyzerOptions;
+  /** Let the browser cancel our own speaker output from the mic (voice mode). */
+  echoCancellation?: boolean;
+}
+
 export class AudioEngine {
+  constructor(private readonly options: EngineOptions = {}) {}
+
   analyzer: Analyzer | null = null;
   /** Latest raw samples (time domain), length FFT_SIZE. */
   readonly samples = new Float32Array(FFT_SIZE);
@@ -17,6 +25,9 @@ export class AudioEngine {
   running = false;
 
   private ctx: AudioContext | null = null;
+  /** True when the AudioContext belongs to someone else (e.g. the orchestra). */
+  private sharedCtx = false;
+  private source: MediaStreamAudioSourceNode | null = null;
   private stream: MediaStream | null = null;
   private gainNode: GainNode | null = null;
   private node: AnalyserNode | null = null;
@@ -26,6 +37,7 @@ export class AudioEngine {
   private gainValue = 1;
   /** Keeps analysis time monotonic across stop/start (each AudioContext restarts at 0). */
   private timeOffset = 0;
+  startedAt = 0;
 
   subscribe(fn: FrameListener): () => void {
     this.listeners.add(fn);
@@ -38,6 +50,16 @@ export class AudioEngine {
     return devices
       .filter((d) => d.kind === "audioinput")
       .map((d, i) => ({ id: d.deviceId, label: d.label || `Input ${i + 1}` }));
+  }
+
+  /** The live AudioContext (shared with the orchestra synth). */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  /** Analysis time = timeOffset + context.currentTime. */
+  get clockOffset(): number {
+    return this.timeOffset;
   }
 
   get sampleRate(): number {
@@ -53,7 +75,7 @@ export class AudioEngine {
     return this.gainValue;
   }
 
-  async start(deviceId?: string): Promise<void> {
+  async start(deviceId?: string, shared?: AudioContext): Promise<void> {
     await this.stop();
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Microphone API unavailable in this webview (getUserMedia missing).");
@@ -62,16 +84,18 @@ export class AudioEngine {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
-        echoCancellation: false,
+        echoCancellation: this.options.echoCancellation ?? false,
         noiseSuppression: false,
         autoGainControl: false,
         channelCount: 1,
       },
     });
-    this.ctx = new AudioContext({ latencyHint: "interactive" });
+    this.sharedCtx = !!shared;
+    this.ctx = shared ?? new AudioContext({ latencyHint: "interactive" });
     if (this.ctx.state === "suspended") await this.ctx.resume();
 
     const src = this.ctx.createMediaStreamSource(this.stream);
+    this.source = src;
     this.gainNode = this.ctx.createGain();
     this.gainNode.gain.value = this.gainValue;
     this.node = this.ctx.createAnalyser();
@@ -80,9 +104,11 @@ export class AudioEngine {
     src.connect(this.gainNode).connect(this.node);
 
     if (!this.analyzer || this.analyzer.sampleRate !== this.ctx.sampleRate) {
-      this.analyzer = new Analyzer(this.ctx.sampleRate);
+      this.analyzer = new Analyzer(this.ctx.sampleRate, this.options.analyzer);
     }
     this.timeOffset = (this.latest?.t ?? 0) + 1;
+    /** ctx time at which capture started (debug / latency measurement). */
+    this.startedAt = this.ctx.currentTime;
     this.lastProcess = -1;
     this.running = true;
     this.loop();
@@ -93,7 +119,10 @@ export class AudioEngine {
     cancelAnimationFrame(this.raf);
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    if (this.ctx) await this.ctx.close().catch(() => {});
+    this.source?.disconnect();
+    this.gainNode?.disconnect();
+    this.source = null;
+    if (this.ctx && !this.sharedCtx) await this.ctx.close().catch(() => {});
     this.ctx = null;
     this.node = null;
     this.gainNode = null;
