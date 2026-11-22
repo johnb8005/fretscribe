@@ -50,7 +50,7 @@ export class Conductor {
   /** Your learned taste (persisted) and the planner that uses it. */
   readonly taste: TasteModel = loadTaste();
   planner: Planner;
-  private adventure = 0.35;
+  private adventure = 0.25;
   private scheduledUntil = -1;
 
   private overrides = new Map<string, { patch?: string; channel?: Partial<ChannelSettings> }>();

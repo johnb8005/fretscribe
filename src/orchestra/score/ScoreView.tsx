@@ -88,7 +88,7 @@ export function ScoreView({ conductor, version }: { conductor: Conductor | null;
         <div className="absolute inset-0 grid place-items-center p-8 text-center">
           <div>
             <p className="font-gear text-3xl font-semibold text-ink">The score is written here as you hum.</p>
-            <p className="mt-2 text-ink/60">Press Record, wait for the one-bar count-in, then hum or whistle a tune. Or try the demo tune.</p>
+            <p className="mt-2 text-ink/60">Press Record, wait for the one-bar count-in, then hum or whistle a tune. Or pick one of the tunes above.</p>
           </div>
         </div>
       )}

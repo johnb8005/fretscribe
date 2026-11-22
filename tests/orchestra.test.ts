@@ -288,3 +288,37 @@ describe("metre", () => {
     expect(pieces(0, 12, 12, true, true)).toEqual([12]);
   });
 });
+
+describe("demo tunes", () => {
+  const { TUNES } = require("../src/orchestra/arranger/tunes");
+  const { withMeter } = require("../src/orchestra/arranger/meter");
+  const keyOf = (notes: Parameters<typeof keyFromMelody>[0], bar: number) => {
+    const k = keyFromMelody(notes, undefined, bar);
+    return `${pcName(k.root)} ${k.scale.id}`;
+  };
+
+  test.each(TUNES.map((t: { id: string }) => [t.id]))("%s fills whole bars of its own metre", (id) => {
+    const t = TUNES.find((x: { id: string }) => x.id === id);
+    const bar = (t.sig[0] * 16) / t.sig[1];
+    const end = Math.max(...t.notes.map((n: { step: number; dur: number }) => n.step + n.dur));
+    expect(end % bar).toBe(0);
+    for (const style of STYLES) {
+      const a = arrange(t.notes, withMeter(style, t.sig));
+      expect(a.parts.every((p) => p.notes.length > 0 || p.spec.role === "swell" || p.spec.role === "timpani")).toBe(true);
+    }
+  });
+
+  test("keys: Ode in C major, Minuet in G major, Greensleeves in A minor", () => {
+    const [ode, minuet, green] = TUNES;
+    expect(keyOf(ode.notes, 16)).toBe("C major");
+    expect(keyOf(minuet.notes, 12)).toBe("G major");
+    expect(keyOf(green.notes, 12)).toBe("A minor");
+  });
+
+  test("Greensleeves gets a major dominant (E) in a classical style", () => {
+    const green = TUNES[2];
+    const a = arrange(green.notes, withMeter(STYLE_BY_ID.romantic, green.sig));
+    expect(a.chords.some((c) => c.chord.root === 4 && c.chord.quality === "maj")).toBe(true);
+    expect(a.chords[a.chords.length - 1].chord.root).toBe(9);
+  });
+});

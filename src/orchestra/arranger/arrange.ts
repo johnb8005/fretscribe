@@ -375,19 +375,5 @@ export function quantize(notes: TimedNote[], t0: number, bpm: number, grid = 2):
   return out;
 }
 
-/** "Ode to Joy" (Beethoven, public domain), two phrases, for the demo. */
-export const DEMO_TUNE: QNote[] = (() => {
-  const q = 4;
-  const seq: [number, number][] = [
-    [64, q], [64, q], [65, q], [67, q], [67, q], [65, q], [64, q], [62, q],
-    [60, q], [60, q], [62, q], [64, q], [64, q * 1.5], [62, q / 2], [62, q * 2],
-    [64, q], [64, q], [65, q], [67, q], [67, q], [65, q], [64, q], [62, q],
-    [60, q], [60, q], [62, q], [64, q], [62, q * 1.5], [60, q / 2], [60, q * 2],
-  ];
-  let step = 0;
-  return seq.map(([midi, dur]) => {
-    const n = { midi, step, dur, vel: 0.8 };
-    step += dur;
-    return n;
-  });
-})();
+/** "Ode to Joy" — kept for tests; see tunes.ts for all demo tunes. */
+export { DEMO_TUNE } from "./demoTune";

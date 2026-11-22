@@ -20,7 +20,7 @@ pitch tracking, synthesis, engraving and the learning. There is no server.
 ```bash
 bun install
 bun run dev          # http://localhost:1420
-bun test             # 75 tests on synthetic guitar and humming audio
+bun test             # 80 tests on synthetic guitar and humming audio
 bun run build        # static site in dist/
 ```
 
@@ -42,7 +42,9 @@ Echo cancellation, noise suppression and AGC are turned off for guitar, because 
    full score appears. Press **Play**, switch styles or ensembles, swap instruments and tweak
    the mix.
 
-Or press **Try the demo tune** to hear *Ode to Joy* without singing.
+Or pick a demo tune (all public domain), each in its own metre:
+*Ode to Joy* (Beethoven, 4/4, C major), *Minuet in G* (Petzold, 3/4, G major) and
+*Greensleeves* (traditional, 6/8, A minor).
 
 **Metre and tempo:** pick 2/4, 3/4, 4/4, 5/4 or compound 6/8, 9/8 or 12/8 (clicks on dotted
 quarters, 8ths beamed in threes). Choose an Italian tempo term or turn the knob; each follows

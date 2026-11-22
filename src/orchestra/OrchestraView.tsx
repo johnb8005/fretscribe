@@ -3,7 +3,7 @@ import { AudioEngine, type InputDevice } from "../audio/engine";
 import { VOICE_OPTIONS } from "../analysis/pipeline";
 import { Knob } from "../components/Controls";
 import { midiToName, pcName, prefersFlats } from "../theory/theory";
-import { DEMO_TUNE } from "./arranger/arrange";
+import { TUNES, TUNE_BY_ID } from "./arranger/tunes";
 import { STYLES, STYLE_BY_ID } from "./arranger/styles";
 import { FORMATIONS, FORMATION_BY_ID, applyFormation } from "./arranger/formations";
 import { TEMPO_TERMS, termFor } from "./arranger/tempo";
@@ -171,6 +171,7 @@ export function OrchestraView() {
       await cond.resume();
       await engine.start(deviceId || undefined, cond.ctx);
       engine.reset();
+      setTuneId(null);
       await cond.record(engine);
       setDevices(await AudioEngine.listInputs());
     } catch (e) {
@@ -189,10 +190,17 @@ export function OrchestraView() {
     }
   };
 
-  const demo = async () => {
+  const [tuneId, setTuneId] = useState<string | null>(null);
+  const playTune = async (id: string) => {
+    const t = TUNE_BY_ID[id];
     const cond = ensure();
     await engine.stop();
-    cond.loadMelody(DEMO_TUNE);
+    // Switch to the tune's own metre (or back to the style's, if they match).
+    const own = sigOf(baseStyle);
+    const m: TimeSig | null = own[0] === t.sig[0] && own[1] === t.sig[1] ? null : t.sig;
+    if ((m ?? []).join("/") !== (sig ?? []).join("/")) pickMeter(m);
+    cond.loadMelody(t.notes);
+    setTuneId(id);
     await cond.resume();
     cond.play();
   };
@@ -266,9 +274,23 @@ export function OrchestraView() {
         >
           {state === "playing" ? "Stop" : "Play"}
         </button>
-        <button type="button" onClick={demo} className="text-sm text-nickel underline decoration-grain underline-offset-4 hover:text-bone">
-          Try the demo tune
-        </button>
+        <div role="group" aria-label="Demo tunes" className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-nickel">Or play a tune:</span>
+          {TUNES.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => playTune(t.id)}
+              title={`${t.name} (${t.composer}), ${t.sig.join("/")}`}
+              aria-pressed={tuneId === t.id && !rec && !!arr}
+              className={`rounded-full border px-3 py-1 text-sm transition-colors ${
+                tuneId === t.id && !rec && arr ? "border-bone text-bone" : "border-grain text-nickel hover:text-bone"
+              }`}
+            >
+              <span className="font-gear text-base font-semibold">{t.name}</span> <span className="text-nickel">{t.composer}</span>
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-3">
           <BeatLight conductor={c} />
           <Knob
@@ -354,11 +376,11 @@ export function OrchestraView() {
         </button>
         <Knob
           label="Adventurous"
-          value={c?.adventurous ?? 0.35}
+          value={c?.adventurous ?? 0.25}
           min={0}
           max={1}
           step={0.01}
-          defaultValue={0.35}
+          defaultValue={0.25}
           onChange={(v) => { ensure().adventurous = v; bump(); }}
           format={(v) => (v < 0.2 ? "Stick to the style" : v > 0.7 ? "Surprise me" : "A little")}
         />
